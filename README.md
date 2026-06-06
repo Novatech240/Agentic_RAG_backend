@@ -118,7 +118,7 @@ graph TD
     Memory --> Prompt["Build prompt<br/>history + canonical question"]
     Prompt --> Agent["Pydantic AI RAG Agent<br/>(OpenAI GPT-4o-mini / GPT-4o)"]
 
-    Agent --> Tools{Agent selects tool(s)}
+    Agent --> Tools{"Agent selects tools"}
     Tools --> DocTool["search_documents"]
     Tools --> GraphTool["search_knowledge_graph_facts"]
     Tools --> ListTool["list_available_documents"]
@@ -152,7 +152,7 @@ graph TD
     Ground -->|"Ungrounded → remediate"| Remed{"Strip unsupported claims;<br/>grounded remainder survives?"}
     Remed -->|Yes| Store2
     Remed -->|No| Abstain
-    Store2 --> OutG["Output guardrails<br/>(prompt-leak scrub, PII redaction,<br/>optional Roman-Urdu)"]
+    Store2 --> OutG["Output guardrails<br/>(prompt-leak scrub, PII redaction)"]
     Abstain --> OutG
 
     OutG --> Answer["Final answer + provenance"]
