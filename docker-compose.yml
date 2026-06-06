@@ -1,0 +1,133 @@
+# All configuration is sourced from .env — nothing is hardcoded here.
+# Compose interpolates ${VARS} from ./.env; containers receive their full
+# environment via `env_file: .env`.
+services:
+  # ── Redis: Celery broker + result backend ─────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: uchenab-redis
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Vespa: retrieval engine (BM25 + dense HNSW + RRF) ─────────────────────
+  vespa:
+    image: vespaengine/vespa:8
+    container_name: uchenab-vespa
+    hostname: vespa
+    ports:
+      - "${VESPA_QUERY_PORT:-8080}:8080"     # feed + query
+      - "${VESPA_CONFIG_PORT:-19071}:19071"  # deploy/config
+    volumes:
+      - vespa-data:/opt/vespa/var
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:19071/state/v1/health"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
+  # ── Vespa schema deploy (one-shot init) ────────────────────────────────────
+  # Waits for the config server, zips vespa/ and activates the app package, then
+  # exits 0. api/worker gate on its successful completion, so a single
+  # `docker compose up` brings Vespa up AND deploys the schema. Idempotent.
+  vespa-deploy:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: uchenab-backend:latest
+    container_name: uchenab-vespa-deploy
+    command: ["python", "-m", "scripts.deploy_vespa"]
+    # Mount the package read-only so schema edits redeploy without an image
+    # rebuild (the dir is also baked into the image as a fallback).
+    volumes:
+      - ./vespa:/app/vespa:ro
+    environment:
+      VESPA_CONFIG_ENDPOINT: "http://vespa:19071"
+      VESPA_QUERY_ENDPOINT: "http://vespa:8080"
+    depends_on:
+      vespa:
+        condition: service_healthy
+    restart: "no"
+
+  # ── FastAPI application ────────────────────────────────────────────────────
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: uchenab-backend:latest
+    container_name: uchenab-api
+    command: ["python", "-m", "uvicorn", "agent.api:app", "--host", "${APP_HOST:-0.0.0.0}", "--port", "${APP_PORT:-8058}"]
+    ports:
+      - "${APP_PORT:-8058}:${APP_PORT:-8058}"
+    volumes:
+      - ./data:/app/data
+    env_file:
+      - .env
+    # On the compose network Vespa is reachable by its service name, not
+    # localhost — override the .env/default endpoint for in-container runs.
+    environment:
+      VESPA_ENDPOINT: "http://vespa:8080"
+    depends_on:
+      redis:
+        condition: service_healthy
+      vespa-deploy:
+        condition: service_completed_successfully
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os,urllib.request; urllib.request.urlopen(f\"http://127.0.0.1:{os.getenv('APP_PORT','8058')}/api/v1/health\")"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # ── Celery worker: document ingestion ──────────────────────────────────────
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: uchenab-backend:latest
+    container_name: uchenab-worker
+    command: ["celery", "-A", "worker.celery_app:celery_app", "worker", "--loglevel=${LOG_LEVEL:-info}", "-Q", "ingestion", "--concurrency=${CELERY_CONCURRENCY:-4}"]
+    env_file:
+      - .env
+    environment:
+      VESPA_ENDPOINT: "http://vespa:8080"
+    depends_on:
+      redis:
+        condition: service_healthy
+      vespa-deploy:
+        condition: service_completed_successfully
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+  # ── Celery beat: periodic ingestion scheduler ──────────────────────────────
+  beat:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: uchenab-backend:latest
+    container_name: uchenab-beat
+    command: ["celery", "-A", "worker.celery_app:celery_app", "beat", "--loglevel=${LOG_LEVEL:-info}"]
+    env_file:
+      - .env
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  redis-data:
+  vespa-data:

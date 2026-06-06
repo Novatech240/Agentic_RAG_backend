@@ -1,0 +1,46 @@
+# ── Core API ──────────────────────────────────────────────────────────────────
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+pydantic>=2.0.0
+pydantic-ai>=0.0.40
+python-dotenv>=1.0.0
+python-multipart>=0.0.9   # multipart/form-data for document uploads
+
+# ── LLM & Embeddings & Memory ─────────────────────────────────────────────────
+openai>=1.50.0
+langchain-core>=0.3.0
+
+
+# ── Supabase (PostgREST client; pgvector lives in Supabase Postgres) ──────────
+supabase>=2.0.0
+
+# ── Knowledge Graph ───────────────────────────────────────────────────────────
+neo4j>=5.0.0
+
+# ── AWS S3 ────────────────────────────────────────────────────────────────────
+boto3>=1.35.0
+
+# ── Document Parsing ──────────────────────────────────────────────────────────
+pypdf>=4.0.0          # PDF
+python-docx>=1.1.0    # .docx
+openpyxl>=3.1.0       # .xlsx
+python-pptx>=0.6.23   # .pptx
+beautifulsoup4>=4.12  # .html
+
+# ── Hybrid Retrieval (Vespa: BM25 + dense + RRF) ──────────────────────────────
+# Vespa is reached over HTTP via httpx (declared under Testing below); no extra
+# client library required. The application package lives in ./vespa.
+
+# ── Auth ─────────────────────────────────────────────────────────────────────
+PyJWT>=2.8.0
+bcrypt>=4.0.0
+
+# ── Async task queue (Celery + Redis) ────────────────────────────────────────
+celery[redis]>=5.4.0
+redis>=5.0.0
+
+# ── Testing ───────────────────────────────────────────────────────────────────
+pytest>=8.0.0
+pytest-asyncio>=0.24.0
+httpx>=0.27.0
+

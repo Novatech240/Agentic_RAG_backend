@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<!--
+  Single-node topology: fine for local Docker dev and small Vespa Cloud prod.
+  Scale out by adding <node> entries under <content> (more shards/replicas)
+  and raising <redundancy>. The same package deploys to Vespa Cloud unchanged
+  (Cloud supplies nodes from <nodes count="..."/> instead of hostalias).
+-->
+<services version="1.0">
+
+  <container id="default" version="1.0">
+    <document-api/>
+    <search/>
+    <nodes>
+      <node hostalias="node1"/>
+    </nodes>
+  </container>
+
+  <content id="chunks" version="1.0">
+    <redundancy>1</redundancy>
+    <documents>
+      <document type="chunk" mode="index"/>
+    </documents>
+    <nodes>
+      <node hostalias="node1" distribution-key="0"/>
+    </nodes>
+  </content>
+
+</services>

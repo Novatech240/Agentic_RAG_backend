@@ -1,0 +1,110 @@
+# Vespa schema for retrievable document chunks.
+#
+# One Vespa document == one chunk. Canonical `documents` rows stay in Postgres;
+# only the retrieval-relevant fields live here. Embeddings are produced upstream
+# by OpenAI text-embedding-3-large (3072-dim) and fed precomputed.
+schema chunk {
+
+    document chunk {
+
+        # Stable Postgres chunk UUID — also used as the Vespa document id.
+        field chunk_id type string {
+            indexing: attribute | summary
+            attribute: fast-search
+        }
+
+        field document_id type string {
+            indexing: attribute | summary
+        }
+
+        field document_title type string {
+            indexing: summary
+        }
+
+        field document_source type string {
+            indexing: summary
+        }
+
+        # 'public' or a user id — used to filter private docs at query time.
+        field access_level type string {
+            indexing: attribute
+            attribute: fast-search
+        }
+
+        field chunk_index type int {
+            indexing: attribute | summary
+        }
+
+        # Lexical leg: BM25 over the chunk text (true IDF + saturation + length norm).
+        field content type string {
+            indexing: index | summary
+            index: enable-bm25
+        }
+
+        # Dense leg: HNSW ANN over the embedding. bfloat16 halves memory vs float
+        # at negligible recall cost; angular distance == cosine for normalized
+        # OpenAI embeddings.
+        field embedding type tensor<bfloat16>(x[3072]) {
+            indexing: attribute | index
+            attribute {
+                distance-metric: angular
+            }
+            index {
+                hnsw {
+                    max-links-per-node: 32
+                    neighbors-to-explore-at-insert: 200
+                }
+            }
+        }
+
+        # Opaque JSON blob mirrored from Postgres chunk metadata.
+        field metadata type string {
+            indexing: summary
+        }
+    }
+
+    fieldset default {
+        fields: content
+    }
+
+    # ── Pure dense (debug / eval baseline) ────────────────────────────────────
+    rank-profile semantic {
+        inputs {
+            query(q) tensor<float>(x[3072])
+        }
+        first-phase {
+            expression: closeness(field, embedding)
+        }
+    }
+
+    # ── Pure BM25 (debug / eval baseline) ─────────────────────────────────────
+    rank-profile bm25 {
+        first-phase {
+            expression: bm25(content)
+        }
+    }
+
+    # ── Hybrid: cheap recall in first-phase, RRF fusion in global-phase ────────
+    # The query issues an OR of nearestNeighbor(embedding) and a text match so
+    # both the HNSW and BM25 indexes contribute candidates; global-phase then
+    # fuses the two rankings with Reciprocal Rank Fusion over `rerank-count`.
+    # Stage-3 cross-encoder reranking happens downstream (Voyage), over the
+    # match-features returned here.
+    rank-profile hybrid {
+        inputs {
+            query(q) tensor<float>(x[3072])
+        }
+        first-phase {
+            expression: closeness(field, embedding)
+        }
+        global-phase {
+            rerank-count: 100
+            expression: reciprocal_rank_fusion(bm25(content), closeness(field, embedding))
+        }
+        match-features {
+            bm25(content)
+            closeness(field, embedding)
+            distance(field, embedding)
+        }
+    }
+}

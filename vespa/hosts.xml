@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<!-- Local single-node dev mapping. Not used on Vespa Cloud. -->
+<hosts>
+  <host name="localhost">
+    <alias>node1</alias>
+  </host>
+</hosts>
