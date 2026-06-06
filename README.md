@@ -21,67 +21,91 @@ Answers pass through **four safety tiers**—scope classification, a cosine-simi
 
 ### 0. End-to-end overview
 
-Documents are ingested into **Postgres (pgvector)**, **Vespa** (primary retrieval), and **Neo4j**. Each chat turn rewrites the query, checks caches, runs the Pydantic AI agent (which calls retrieval tools), then applies four post-generation safety tiers.
+The system has three planes: an **ingestion plane** (Celery workers that index documents), a **storage plane** (Postgres pgvector = durable truth, **Vespa** = primary retrieval, Neo4j = knowledge graph, Redis = caches + memory), and a **query plane** (`api.py`: rewrite → caches → scope → Pydantic AI agent → four safety tiers). Vespa is drawn with its real internals — the lexical (BM25) leg, the dense (HNSW) leg, and the `hybrid` RRF rank profile.
 
 ```mermaid
 flowchart TB
-    subgraph ING["Ingestion — Celery workers"]
-        SRC[(S3 buckets)] --> ITASK[Celery ingest task]
+    %% ── Ingestion plane ──────────────────────────────────────────────
+    subgraph ING["Ingestion plane — Celery workers"]
+        SRC[(S3 buckets)] --> ITASK[ingest task]
         UP[API upload / S3 webhook] --> ITASK
-        ITASK --> PARSE[Parse documents]
-        PARSE --> DHASH{"Doc hash changed?"}
+        ITASK --> PARSE[Parse PDF/DOCX/XLSX/PPTX/CSV/HTML]
+        PARSE --> DHASH{"Doc SHA-256 changed?"}
         DHASH -->|No| SKIP[Skip re-embed]
-        DHASH -->|Yes| CHUNK[Semantic chunking]
-        CHUNK --> EMB[Embed chunks]
-        EMB --> FACTS[Extract graph facts]
+        DHASH -->|Yes| CHUNK[Semantic chunking + per-chunk diff]
+        CHUNK --> EMB["Embed — text-embedding-3-large (3072-d)"]
+        CHUNK --> FACTS[LLM entity/fact extraction]
     end
 
-    subgraph STORE["Stores"]
-        direction LR
-        PG[(Supabase pgvector)]
-        VES[(Vespa BM25 + HNSW)]
-        NEO[(Neo4j graph)]
+    %% ── Storage plane ────────────────────────────────────────────────
+    subgraph STORE["Storage plane"]
+        PG[("Postgres pgvector<br/>durable source of truth")]
+        subgraph VESPA["Vespa — primary retrieval engine"]
+            direction TB
+            VDOC["document-api :8080<br/>feed / delete chunks"]
+            subgraph VSCHEMA["schema chunk"]
+                VBM25["content — enable-bm25<br/>(lexical leg)"]
+                VHNSW["embedding bfloat16[3072]<br/>HNSW angular (dense leg)"]
+                VACC["access_level — fast-search filter"]
+            end
+            VHYB["rank-profile hybrid<br/>RRF over BM25 + closeness<br/>global-phase rerank-count 100"]
+            VDOC --> VSCHEMA
+            VBM25 --> VHYB
+            VHNSW --> VHYB
+        end
+        NEO[("Neo4j<br/>entity/fact graph")]
+        REDIS[("Redis<br/>answer cache · retrieval cache · session memory")]
     end
 
     EMB --> PG
-    PG --> VES
+    PG -->|feed_chunks, shared ids| VDOC
     FACTS --> NEO
-    EMB --> BUMP[Bump cache version]
+    EMB --> BUMP[Bump cache version] --> REDIS
 
-    subgraph QRY["Query to answer — api.py"]
-        UI([Assistant UI]) --> API["POST /api/v1/chat"]
-        API --> REW[Rewrite canonical query]
-        REW --> AC{"Answer cache hit?"}
+    %% ── Query plane ──────────────────────────────────────────────────
+    subgraph QRY["Query plane — agent/api.py"]
+        UI([Assistant UI]) --> API["POST /api/v1/chat &#124; /chat/stream"]
+        API --> SESS[Resolve session + load history]
+        SESS --> REW[Rewrite to canonical query]
+        REW --> AC{"Answer cache hit?<br/>admin bypass"}
         AC -->|Yes| OUT[Return cached answer]
-        AC -->|No| T1{"Tier 1 scope"}
-        T1 -->|No| DECL[Decline]
-        T1 -->|Yes| AGENT["Pydantic AI agent<br/>input guardrails inside execute_agent"]
-        AGENT --> RET[Tool retrieval + rerank]
-        AGENT --> GS[Graph tool optional]
-        RET --> GEN[LLM cited answer]
+        AC -->|No| T1{"Tier 1 — scope<br/>history-aware LLM"}
+        T1 -->|Out of scope| DECL[Decline]
+        T1 -->|In scope| IG{"Input guardrails<br/>injection / abuse — fail-closed"}
+        IG -->|Blocked| BLK[Refusal]
+        IG -->|Allowed| AGENT["Pydantic AI agent"]
+        AGENT --> RET["search_documents tool<br/>hybrid retrieval + Voyage rerank"]
+        AGENT --> GS["search_knowledge_graph_facts<br/>(optional)"]
+        RET --> GEN["LLM answer with [n] citations"]
         GS --> GEN
-        GEN --> T2{"Tier 2 confidence<br/>post-agent chunks"}
-        T2 -->|Low| ESC[Admin escalation]
-        T2 -->|OK| T3{"Tier 3 citations"}
+        GEN --> OG[Output guardrails — PII / leak scrub]
+        OG --> T2{"Tier 2 — confidence<br/>cosine &lt; 0.25"}
+        T2 -->|Low| ESC[Admin escalation + Celery alert]
+        T2 -->|OK| T3{"Tier 3 — citations<br/>if hybrid_search used"}
         T3 -->|Fail| ABS[Abstain]
-        T3 -->|OK| T4{"Tier 4 groundedness"}
-        T4 -->|OK| CACHE[Store answer cache]
-        T4 -->|Partial| REM[Remediate claims]
-        REM --> CACHE
+        T3 -->|OK| T4{"Tier 4 — groundedness<br/>LLM entailment judge"}
+        T4 -->|Grounded| CACHE[Store answer cache]
+        T4 -->|Partial| REM[Strip unsupported claims] --> CACHE
         REM -->|Nothing left| ABS
-        CACHE --> OG[Output guardrails]
-        ABS --> OG
-        ESC --> OG
-        OG --> OUT
-        OUT --> PERSIST[Persist turn]
+        CACHE --> OUT
+        ESC --> OUT
+        ABS --> OUT
+        DECL --> OUT
+        BLK --> OUT
+        OUT --> PERSIST[Persist turn — Supabase + Redis memory]
     end
 
-    RET -.-> VES
-    RET -.-> PG
-    GS -.-> NEO
+    %% ── Retrieval wiring (dotted = read paths) ───────────────────────
+    AC -.read/write.-> REDIS
+    RET -.Stage 0 cache.-> REDIS
+    RET -.embed query → hybrid YQL.-> VHYB
+    RET -.fallback if Vespa down.-> PG
+    GS -.factIndex full-text.-> NEO
 ```
 
-> **Stream note:** `POST /api/v1/chat/stream` runs **Tier 2 as a pre-check** on `canonical_query` *before* the agent streams tokens. Non-streaming `/chat` runs Tier 2 **after** the agent, on chunks the agent actually retrieved.
+> **Stream vs non-stream Tier 2:** `POST /api/v1/chat/stream` runs **Tier 2 as a pre-check** on `canonical_query` (a direct `hybrid_search_tool` call) *before* the agent streams tokens — if confidence is low the agent never runs. Non-streaming `/chat` runs Tier 2 **after** the agent, on the chunks the agent actually retrieved. Tiers 3 and 4 run post-generation on both paths (the stream emits a `replace` SSE event if remediation changes the answer).
+>
+> **Vespa query mechanics:** the `search_documents` tool embeds the query, then issues one YQL combining `nearestNeighbor(embedding, q)` (HNSW dense leg, `targetHits` ≥ 100) **OR** `userInput(@userquery)` (BM25 lexical leg). The `hybrid` rank profile fuses both rankings with **Reciprocal Rank Fusion** in `global-phase` (top 100), and true cosine is recovered from the `distance` match-feature for the Tier 2 gate. Anonymous callers get an `access_level contains "public"` clause; authenticated users are unfiltered. See [§1d](#1d-inside-vespa--the-deployed-application-package) for the full component diagram.
 
 ---
 
