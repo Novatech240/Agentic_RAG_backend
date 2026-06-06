@@ -1,4 +1,4 @@
-# Uchenab RAG — Enterprise Backend Services
+# Builtpulse Real Estate RAG — Enterprise Backend Services
 
 ![Python](https://img.shields.io/badge/Python-3776AB?style=for-the-badge&logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/FastAPI-005571?style=for-the-badge&logo=fastapi&logoColor=white)
@@ -11,9 +11,9 @@
 ![AWS S3](https://img.shields.io/badge/Amazon_S3-569A31?style=for-the-badge&logo=amazons3&logoColor=white)
 ![Docker](https://img.shields.io/badge/Docker-2496ED?style=for-the-badge&logo=docker&logoColor=white)
 
-The **Uchenab University Assistant** backend is a state-of-the-art, enterprise-grade AI engine designed to assist university students and applicants. Powered by **Pydantic AI** and **FastAPI**, it runs a **three-stage retrieval pipeline**: a **Vespa** hybrid engine that fuses true **BM25** lexical search and **dense HNSW** vector search with **Reciprocal Rank Fusion (RRF)** in a single query, a **cross-encoder reranker** (Voyage) precision stage, and a **Neo4j Knowledge Graph** for structured entity/fact lookups. **Supabase pgvector** is the durable source of truth and an automatic fallback if Vespa is unreachable.
+The **Builtpulse Real Estate Assistant** backend is a state-of-the-art, enterprise-grade AI engine designed to assist property buyers, sellers, and agents. Powered by **Pydantic AI** and **FastAPI**, it runs a **three-stage retrieval pipeline**: a **Vespa** hybrid engine that fuses true **BM25** lexical search and **dense HNSW** vector search with **Reciprocal Rank Fusion (RRF)** in a single query, a **cross-encoder reranker** (Voyage) precision stage, and a **Neo4j Knowledge Graph** for structured entity/fact lookups. **Supabase pgvector** is the durable source of truth and an automatic fallback if Vespa is unreachable.
 
-Answers pass through **three safety tiers**—a scope classifier, a cosine-similarity confidence gate, and post-generation citation enforcement—so the assistant abstains rather than hallucinates. The system features real-time asynchronous background pipelines running on **Celery + Redis**, strict guardrails (prompt-injection filters and CNIC/PII redaction), and robust connection caching. Students and staff test the agent via the web **Assistant** chat UI.
+Answers pass through **three safety tiers**—a scope classifier, a cosine-similarity confidence gate, and post-generation citation enforcement—so the assistant abstains rather than hallucinates. The system features real-time asynchronous background pipelines running on **Celery + Redis**, strict guardrails (prompt-injection filters and CNIC/PII redaction), and robust connection caching. Users and agents test the agent via the web **Assistant** chat UI.
 
 ---
 
@@ -54,14 +54,14 @@ graph TD
     PG --> FEED["Feed chunks (shared ids)"] --> VES
     FACTS --> NEO
     DELC --> PG
-    DELC -. delete .-> VES
+    DELC -.->|delete| VES
     EMB --> BUMP["Bump cache version<br/>(invalidate answer + retrieval caches)"]
 
     %% ───────────── QUERY / ANSWER ─────────────
     subgraph QRY["Query → Answer"]
         direction TB
         UI([Assistant UI]) --> API["POST /api/v1/chat<br/>(/chat/stream SSE)"]
-        API --> REW["Rewrite -> canonical query<br/>(history-resolved, fail-open)"]
+        API --> REW["Rewrite → canonical query<br/>(history-resolved, fail-open)"]
         REW --> AC{"Turn answer cache<br/>(canonical query + scope)"}
         AC -->|Hit| OUT
         AC -->|Miss| SCOPE{"Tier 1 — scope<br/>(LLM, history-aware)"}
@@ -69,7 +69,7 @@ graph TD
         SCOPE -->|in scope| GIN{"Input guardrails<br/>injection / abuse (fail-closed)"}
         GIN -->|blocked| REFUSE["Refusal"]
         GIN -->|allowed| AGENT["Pydantic AI agent<br/>(tool selection)"]
-        AGENT --> RET["Retrieval:<br/>cache 0 -> embed -> Vespa hybrid (RRF)<br/>/ Postgres fallback -> cross-encoder rerank"]
+        AGENT --> RET["Retrieval:<br/>cache 0 → embed → Vespa hybrid (RRF)<br/>/ Postgres fallback → cross-encoder rerank"]
         AGENT --> GS["Graph fact lookup"]
         RET --> GEN["LLM generates cited answer"]
         GS --> GEN
@@ -79,7 +79,7 @@ graph TD
         T3 -->|"fabricated / uncited"| ABS["Abstain"]
         T3 -->|ok| T4{"Tier 4 — groundedness<br/>chunks entail claims?"}
         T4 -->|grounded| GOUT
-        T4 -->|"ungrounded -> remediate"| REM{"Strip unsupported claims;<br/>grounded remainder survives?"}
+        T4 -->|"ungrounded → remediate"| REM{"Strip unsupported claims;<br/>grounded remainder survives?"}
         REM -->|yes| GOUT["Store answer cache<br/>(verified-good only)"]
         REM -->|no| ABS
         GOUT --> OG["Output guardrails<br/>(PII redaction, leak scrub)"]
@@ -90,22 +90,22 @@ graph TD
     end
 
     %% Query reads from the shared stores
-    RET -. primary .-> VES
-    RET -. fallback .-> PG
-    GS -. reads .-> NEO
+    RET -.->|primary| VES
+    RET -.->|fallback| PG
+    GS -.->|reads| NEO
 ```
 
 ---
 
 ### 1. Web Chat RAG Flow
-Students and staff test the agent via the **Assistant** UI (`/dashboard/chat`), which calls `POST /api/v1/chat` (or `/chat/stream` for SSE). The pipeline retrieves and fuses context from hybrid document search and the Neo4j knowledge graph before generating a grounded answer.
+Users and agents test the agent via the **Assistant** UI (`/dashboard/chat`), which calls `POST /api/v1/chat` (or `/chat/stream` for SSE). The pipeline retrieves and fuses context from hybrid document search and the Neo4j knowledge graph before generating a grounded answer.
 
 ```mermaid
 graph TD
     UI([Assistant UI<br/>/dashboard/chat]) --> API["POST /api/v1/chat<br/>(or /chat/stream SSE)"]
     API --> Session["Resolve session_id<br/>(Redis / in-process memory)"]
 
-    Session --> Canon["Conversational query rewrite<br/>condense history + turn -> canonical query<br/>(fail-open)"]
+    Session --> Canon["Conversational query rewrite<br/>condense history + turn → canonical query<br/>(fail-open)"]
     Canon --> ACache{"Turn-level answer cache<br/>(Redis; canonical query + scope)"}
     ACache -->|Hit| CacheOut["Return cached answer + tools<br/>(zero model calls; admin bypass)"]
     ACache -->|Miss| Scope{"Tier 1 — Scope classifier<br/>(LLM, history-aware)"}
@@ -128,9 +128,9 @@ graph TD
         DocTool --> Cache{"Stage 0 — retrieval cache<br/>(Redis; normalized query + scope)"}
         Cache -->|Hit| Context
         Cache -->|Miss| Embed["1 - Embed query<br/>(text-embedding-3-large, 3072-d)"]
-        Embed --> Vespa["2 - Vespa hybrid recall<br/>BM25 + dense HNSW -> RRF<br/>(widened candidate pool)"]
-        Vespa -. "Vespa down / empty" .-> PGFallback["Postgres hybrid_search RPC<br/>(pgvector + tsvector fallback)"]
-        Vespa --> Rerank["3 - Cross-encoder rerank<br/>(Voyage rerank-2-lite, fail-open)<br/>-> top-k by true relevance"]
+        Embed --> Vespa["2 - Vespa hybrid recall<br/>BM25 + dense HNSW → RRF<br/>(widened candidate pool)"]
+        Vespa -.->|Vespa down / empty| PGFallback["Postgres hybrid_search RPC<br/>(pgvector + tsvector fallback)"]
+        Vespa --> Rerank["3 - Cross-encoder rerank<br/>(Voyage rerank-2-lite, fail-open)<br/>→ top-k by true relevance"]
         PGFallback --> Rerank
         Rerank --> Store["cache result (TTL; ingest-invalidated)"]
     end
@@ -197,7 +197,7 @@ sequenceDiagram
     participant Agent as RAG Agent
 
     UI->>API: message + session_id
-    API->>Redis: load sliding-window history (uchenab:session:*)
+    API->>Redis: load sliding-window history (builtpulse:session:*)
     Redis-->>API: prior turns (or empty)
     API->>API: rewrite → canonical query (history-resolved)
     API->>Redis: GET answer cache (canonical query + scope)
@@ -254,7 +254,7 @@ graph TD
     Postgres --> Feed["Feed chunks to Vespa<br/>(shared chunk ids; BM25 + HNSW indexes)"]
     Feed --> VespaIdx[("Vespa primary index<br/>backfillable from Postgres")]
     Embed --> GraphBuild["graph_builder: LLM entity/fact extraction<br/>(fail-open)"]
-    GraphBuild --> Neo4jOut[("Neo4j: (:Entity)-[:HAS_FACT]->(:Fact)-[:FROM_CHUNK]->(:Chunk)<br/>full-text factIndex + chunkIndex")]
+    GraphBuild --> Neo4jOut[("Neo4j: Entity - HAS_FACT → Fact - FROM_CHUNK → Chunk<br/>full-text factIndex + chunkIndex")]
     Feed --> Bump["Bump cache version<br/>(invalidate answer + retrieval caches)"]
 ```
 
@@ -269,7 +269,7 @@ items are where accuracy, cost, and robustness improve most next.
 
 ```mermaid
 graph TD
-    Q([User turn]) --> R1["✅ Conversational query rewrite<br/>condense history -> standalone query"]
+    Q([User turn]) --> R1["✅ Conversational query rewrite<br/>condense history → standalone query"]
     R1 --> R2["✅ Retrieval cache (Redis)<br/>skip embed+retrieve on repeat/near-dup"]
     R2 --> R3["③ Contextual Retrieval<br/>prepend doc/section context to each chunk<br/>before embedding"]
     R3 --> R4["Vespa hybrid + rerank<br/>(existing)"]
@@ -383,5 +383,5 @@ Ensure **PostgreSQL**, **Neo4j**, and **Redis** servers are running locally.
 ## 🧪 Testing Suite
 Execute the testing framework using a clean container build:
 ```bash
-docker run --rm -v "$(pwd)":/app -w /app uchenab-backend:latest python -m pytest -q
+docker run --rm -v "$(pwd)":/app -w /app builtpulse-backend:latest python -m pytest -q
 ```
